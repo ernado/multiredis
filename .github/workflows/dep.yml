@@ -12,7 +12,7 @@ jobs:
   dependency-review:
     runs-on: ubuntu-latest
     env:
-      FIRST_COMMIT_SHA: CHANGEME
+      FIRST_COMMIT_SHA: dcb1758913f318d739c2e217bfa2fe159078cafa
     steps:
       - name: 'Checkout Repository'
         uses: actions/checkout@v4
