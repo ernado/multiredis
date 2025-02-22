@@ -2,6 +2,8 @@ baseDir: /tmp/multiredis
 instances:
   primary:
     port: 27379
+    sentinel:
+      port: 27479
   secondary:
     port: 27380
     replicaOf: primary

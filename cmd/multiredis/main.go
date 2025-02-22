@@ -22,6 +22,12 @@ import (
 type RedisInstance struct {
 	Port      int    `yaml:"port"`
 	ReplicaOf string `yaml:"replicaOf"`
+
+	Sentinel RedisInstanceSentinel `yaml:"sentinel"`
+}
+
+type RedisInstanceSentinel struct {
+	Port int `yaml:"port"`
 }
 
 type RedisCluster struct {
@@ -78,6 +84,59 @@ func (r RedisConfig) String() string {
 		b.WriteString("\n")
 		b.WriteString("cluster-node-timeout ")
 		b.WriteString(fmt.Sprintf("%d", r.ClusterNodeTimeout))
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
+type SentinelMonitor struct {
+	Name      string
+	Host      string
+	Port      int
+	Agreement int
+
+	DownAfterMilliseconds int
+	FailoverTimeout       int
+	ParallelSyncs         int
+}
+
+type RedisSentinelConfig struct {
+	Port     int
+	Monitors []SentinelMonitor
+}
+
+func (r RedisSentinelConfig) String() string {
+	var b strings.Builder
+
+	b.WriteString("port ")
+	b.WriteString(fmt.Sprintf("%d", r.Port))
+	b.WriteString("\n")
+
+	for _, monitor := range r.Monitors {
+		b.WriteString("sentinel monitor ")
+		b.WriteString(monitor.Name)
+		b.WriteString(" ")
+		b.WriteString(monitor.Host)
+		b.WriteString(" ")
+		b.WriteString(fmt.Sprintf("%d", monitor.Port))
+		b.WriteString(" ")
+		b.WriteString(fmt.Sprintf("%d", monitor.Agreement))
+		b.WriteString("\n")
+		b.WriteString("sentinel down-after-milliseconds ")
+		b.WriteString(monitor.Name)
+		b.WriteString(" ")
+		b.WriteString(fmt.Sprintf("%d", monitor.DownAfterMilliseconds))
+		b.WriteString("\n")
+		b.WriteString("sentinel failover-timeout ")
+		b.WriteString(monitor.Name)
+		b.WriteString(" ")
+		b.WriteString(fmt.Sprintf("%d", monitor.FailoverTimeout))
+		b.WriteString("\n")
+		b.WriteString("sentinel parallel-syncs ")
+		b.WriteString(monitor.Name)
+		b.WriteString(" ")
+		b.WriteString(fmt.Sprintf("%d", monitor.ParallelSyncs))
 		b.WriteString("\n")
 	}
 
@@ -167,6 +226,43 @@ func newRootCommand() *cobra.Command {
 
 			g, ctx := errgroup.WithContext(ctx)
 			for name, instance := range config.Instances {
+				if instance.Sentinel.Port != 0 {
+					instanceDir := filepath.Join(config.BaseDir, name, "sentinel")
+					if err := os.MkdirAll(instanceDir, 0700); err != nil {
+						return errors.Wrap(err, "create instance dir")
+					}
+
+					configPath := filepath.Join(instanceDir, "sentinel.conf")
+					cfg := RedisSentinelConfig{
+						Port: instance.Sentinel.Port,
+						Monitors: []SentinelMonitor{
+							{
+								Name:                  name,
+								Host:                  host,
+								Port:                  instance.Port,
+								Agreement:             1,
+								DownAfterMilliseconds: 30000,
+								FailoverTimeout:       180000,
+								ParallelSyncs:         1,
+							},
+						},
+					}
+
+					cfgData := []byte(cfg.String())
+					if err := os.WriteFile(configPath, cfgData, 0600); err != nil {
+						return errors.Wrap(err, "write config file")
+					}
+
+					cmd := exec.CommandContext(ctx, "redis-sentinel", configPath)
+					prefix := fmt.Sprintf("[%s.sentinel] ", name)
+					cmd.Stdout = newPrefixWriter(mux, prefix)
+					cmd.Stderr = newPrefixWriter(mux, prefix)
+					cmd.Dir = instanceDir
+
+					g.Go(func() error {
+						return cmd.Run()
+					})
+				}
 				g.Go(func() error {
 					instanceDir := filepath.Join(config.BaseDir, name)
 					if err := os.MkdirAll(instanceDir, 0700); err != nil {
