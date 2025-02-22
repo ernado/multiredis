@@ -1,0 +1,57 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      # https://goreleaser.com/ci/actions/
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: git fetch --force --tags
+
+      - uses: anchore/sbom-action/download-syft@v0
+      - run: sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: false
+
+      - name: Get Go environment
+        id: go-env
+        run: |
+          echo "cache=$(go env GOCACHE)" >> $GITHUB_ENV
+          echo "modcache=$(go env GOMODCACHE)" >> $GITHUB_ENV
+          echo "goversion=$(go env GOVERSION)" >> $GITHUB_ENV
+
+      - name: Set up cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.cache }}
+            ${{ env.modcache }}
+          key: release-${{ runner.os }}-go-${{ env.goversion }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            release-${{ runner.os }}-go-${{ env.goversion }}
+
+      - name: goreleaser-install
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          install-only: true
+
+      - name: goreleaser-release
+        run: task goreleaser
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

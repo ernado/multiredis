@@ -1,0 +1,64 @@
+name: lint
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  golangci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: false
+
+      - name: Get Go environment
+        id: go-env
+        run: |
+          echo "cache=$(go env GOCACHE)" >> $GITHUB_ENV
+          echo "modcache=$(go env GOMODCACHE)" >> $GITHUB_ENV
+          echo "lintcache=$HOME/.cache/golangci-lint" >> $GITHUB_ENV
+
+      - name: Set up cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.cache }}
+            ${{ env.modcache }}
+            ${{ env.lintcache }}
+          key: lint-${{ runner.os }}-go-${{ hashFiles('.goreleaser.yaml') }}-${{ hashFiles('**/go.sum') }}-${{ hashFiles('**/*.go') }}
+          restore-keys: |
+            lint-${{ runner.os }}-go-
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6.3.2
+        with:
+          version: latest
+          args: --timeout 5m
+          skip-pkg-cache: true
+          skip-build-cache: true
+
+  # Check if there are any dirty changes after go mod tidy
+  mod:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download && go mod tidy
+
+      - name: Check git diff
+        run: git diff --exit-code
