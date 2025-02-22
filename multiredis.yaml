@@ -1,0 +1,7 @@
+base_dir: /tmp/multiredis
+instances:
+  primary:
+    port: 27379
+  secondary:
+    port: 27380
+    replicaOf: primary
