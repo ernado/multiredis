@@ -43,6 +43,18 @@ type Config struct {
 	Clusters  map[string]RedisCluster  `yaml:"clusters"`
 }
 
+type OutputSentinel struct {
+	Addrs      []string `yaml:"addrs,omitempty"`
+	MasterName string   `yaml:"master_name,omitempty"`
+}
+
+type OutputServer struct {
+	Addrs    []string        `yaml:"addrs,omitempty"`
+	Sentinel *OutputSentinel `yaml:"sentinel,omitempty"`
+}
+
+type Output map[string]OutputServer
+
 type RedisConfig struct {
 	Bind []string
 	Port int
@@ -237,30 +249,45 @@ func newRootCommand() *cobra.Command {
 					cancel()
 				}
 			}()
+
+			out := make(Output)
+			var totalInstances int
+
 			for name, instance := range config.Instances {
 				for i := 0; i < instance.Sentinel.Replicas; i++ {
-					g.Go(func() error {
-						instanceDir := filepath.Join(config.BaseDir, name, "sentinel", fmt.Sprintf("%d", i))
-						if err := os.MkdirAll(instanceDir, 0700); err != nil {
-							return errors.Wrap(err, "create instance dir")
-						}
-
-						configPath := filepath.Join(instanceDir, "sentinel.conf")
-						cfg := RedisSentinelConfig{
-							Port: instance.Sentinel.StartPort + i,
-							Monitors: []SentinelMonitor{
-								{
-									Name:                  name,
-									Host:                  host,
-									Port:                  instance.Port,
-									Agreement:             1,
-									DownAfterMilliseconds: 30000,
-									FailoverTimeout:       180000,
-									ParallelSyncs:         1,
-								},
+					totalInstances++
+					if out[name].Sentinel == nil {
+						out[name] = OutputServer{
+							Sentinel: &OutputSentinel{
+								MasterName: name,
 							},
 						}
+					}
 
+					instanceDir := filepath.Join(config.BaseDir, name, "sentinel", fmt.Sprintf("%d", i))
+					if err := os.MkdirAll(instanceDir, 0700); err != nil {
+						return errors.Wrap(err, "create instance dir")
+					}
+
+					configPath := filepath.Join(instanceDir, "sentinel.conf")
+					cfg := RedisSentinelConfig{
+						Port: instance.Sentinel.StartPort + i,
+						Monitors: []SentinelMonitor{
+							{
+								Name:                  name,
+								Host:                  host,
+								Port:                  instance.Port,
+								Agreement:             1,
+								DownAfterMilliseconds: 30000,
+								FailoverTimeout:       180000,
+								ParallelSyncs:         1,
+							},
+						},
+					}
+					instanceAddr := net.JoinHostPort(host, fmt.Sprintf("%d", cfg.Port))
+					out[name].Sentinel.Addrs = append(out[name].Sentinel.Addrs, instanceAddr)
+
+					g.Go(func() error {
 						cfgData := []byte(cfg.String())
 						if err := os.WriteFile(configPath, cfgData, 0600); err != nil {
 							return errors.Wrap(err, "write config file")
@@ -280,18 +307,27 @@ func newRootCommand() *cobra.Command {
 						return nil
 					})
 				}
+				totalInstances++
+
+				instanceDir := filepath.Join(config.BaseDir, name)
+				if err := os.MkdirAll(instanceDir, 0700); err != nil {
+					return errors.Wrap(err, "create instance dir")
+				}
+
+				configPath := filepath.Join(instanceDir, "redis.conf")
+				cfg := RedisConfig{
+					Bind: []string{host},
+					Port: instance.Port,
+				}
+
+				instanceAddr := net.JoinHostPort(host, fmt.Sprintf("%d", cfg.Port))
+
+				{
+					v := out[name]
+					v.Addrs = append(v.Addrs, instanceAddr)
+					out[name] = v
+				}
 				g.Go(func() error {
-					instanceDir := filepath.Join(config.BaseDir, name)
-					if err := os.MkdirAll(instanceDir, 0700); err != nil {
-						return errors.Wrap(err, "create instance dir")
-					}
-
-					configPath := filepath.Join(instanceDir, "redis.conf")
-					cfg := RedisConfig{
-						Bind: []string{host},
-						Port: instance.Port,
-					}
-
 					if instance.ReplicaOf != "" {
 						cfg.ReplicaOfHost = host
 						cfg.ReplicaOfPort = config.Instances[instance.ReplicaOf].Port
@@ -323,6 +359,7 @@ func newRootCommand() *cobra.Command {
 			for clusterName, cluster := range config.Clusters {
 				var nodes []string
 				for i := 0; i < cluster.Replicas; i++ {
+					totalInstances++
 					instanceName := fmt.Sprintf("%s.%d", clusterName, i)
 					instancePort := cluster.StartPort + i
 					instanceAddr := net.JoinHostPort(host, fmt.Sprintf("%d", instancePort))
@@ -364,6 +401,10 @@ func newRootCommand() *cobra.Command {
 					})
 				}
 
+				out[clusterName] = OutputServer{
+					Addrs: nodes,
+				}
+
 				g.Go(func() error {
 					time.Sleep(time.Second)
 
@@ -391,6 +432,23 @@ func newRootCommand() *cobra.Command {
 
 					return nil
 				})
+			}
+
+			{
+				b := new(bytes.Buffer)
+				b.WriteString("# Multiredis output.\n")
+				b.WriteString(fmt.Sprintf("# Total instances: %d\n", totalInstances))
+
+				m := yaml.NewEncoder(b)
+				m.SetIndent(2)
+				if err := m.Encode(out); err != nil {
+					return errors.Wrap(err, "encode output")
+				}
+
+				outPath := filepath.Join(config.BaseDir, "output.yaml")
+				if err := os.WriteFile(outPath, b.Bytes(), 0600); err != nil {
+					return errors.Wrap(err, "write output file")
+				}
 			}
 
 			if err := g.Wait(); err != nil {
