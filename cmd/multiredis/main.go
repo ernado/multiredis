@@ -162,7 +162,7 @@ func newPrefixWriter(mux *sync.Mutex, prefix string) *prefixWriter {
 	}
 }
 
-func (w prefixWriter) Write(p []byte) (n int, err error) {
+func (w *prefixWriter) Write(p []byte) (n int, err error) {
 	w.mux.Lock()
 	defer w.mux.Unlock()
 
@@ -190,7 +190,6 @@ func (w prefixWriter) Write(p []byte) (n int, err error) {
 		if _, err := w.Writer.Write(elem); err != nil {
 			return 0, err
 		}
-		w.needPrefix = true
 	}
 
 	return len(p), nil
