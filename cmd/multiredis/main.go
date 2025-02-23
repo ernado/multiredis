@@ -239,43 +239,45 @@ func newRootCommand() *cobra.Command {
 			}()
 			for name, instance := range config.Instances {
 				for i := 0; i < instance.Sentinel.Replicas; i++ {
-					instanceDir := filepath.Join(config.BaseDir, name, "sentinel")
-					if err := os.MkdirAll(instanceDir, 0700); err != nil {
-						return errors.Wrap(err, "create instance dir")
-					}
-
-					configPath := filepath.Join(instanceDir, "sentinel.conf")
-					cfg := RedisSentinelConfig{
-						Port: instance.Sentinel.StartPort + i,
-						Monitors: []SentinelMonitor{
-							{
-								Name:                  name,
-								Host:                  host,
-								Port:                  instance.Port,
-								Agreement:             1,
-								DownAfterMilliseconds: 30000,
-								FailoverTimeout:       180000,
-								ParallelSyncs:         1,
-							},
-						},
-					}
-
-					cfgData := []byte(cfg.String())
-					if err := os.WriteFile(configPath, cfgData, 0600); err != nil {
-						return errors.Wrap(err, "write config file")
-					}
-
-					cmd := exec.CommandContext(ctx, "redis-sentinel", configPath)
-					prefix := fmt.Sprintf("[%s.sentinel.%d] ", name, i)
-					cmd.Stdout = newPrefixWriter(mux, prefix)
-					cmd.Stderr = newPrefixWriter(mux, prefix)
-					cmd.Dir = instanceDir
-
 					g.Go(func() error {
+						instanceDir := filepath.Join(config.BaseDir, name, "sentinel", fmt.Sprintf("%d", i))
+						if err := os.MkdirAll(instanceDir, 0700); err != nil {
+							return errors.Wrap(err, "create instance dir")
+						}
+
+						configPath := filepath.Join(instanceDir, "sentinel.conf")
+						cfg := RedisSentinelConfig{
+							Port: instance.Sentinel.StartPort + i,
+							Monitors: []SentinelMonitor{
+								{
+									Name:                  name,
+									Host:                  host,
+									Port:                  instance.Port,
+									Agreement:             1,
+									DownAfterMilliseconds: 30000,
+									FailoverTimeout:       180000,
+									ParallelSyncs:         1,
+								},
+							},
+						}
+
+						cfgData := []byte(cfg.String())
+						if err := os.WriteFile(configPath, cfgData, 0600); err != nil {
+							return errors.Wrap(err, "write config file")
+						}
+
+						cmd := exec.CommandContext(ctx, "redis-sentinel", configPath)
+						prefix := fmt.Sprintf("[%s.sentinel.%d] ", name, i)
+						cmd.Stdout = newPrefixWriter(mux, prefix)
+						cmd.Stderr = newPrefixWriter(mux, prefix)
+						cmd.Dir = instanceDir
 						defer func() {
 							fmt.Printf("%sstoppped\n", prefix)
 						}()
-						return cmd.Run()
+						if err := cmd.Run(); err != nil {
+							return errors.Wrapf(err, "sentinel %s", name)
+						}
+						return nil
 					})
 				}
 				g.Go(func() error {
@@ -310,7 +312,11 @@ func newRootCommand() *cobra.Command {
 						fmt.Printf("%sstoppped\n", prefix)
 					}()
 
-					return cmd.Run()
+					if err := cmd.Run(); err != nil {
+						return errors.Wrapf(err, "instance %s", name)
+					}
+
+					return nil
 				})
 			}
 
@@ -351,7 +357,7 @@ func newRootCommand() *cobra.Command {
 							fmt.Printf("%sstoppped\n", prefix)
 						}()
 						if err := cmd.Run(); err != nil {
-							return errors.Wrapf(err, "start redis instance %s", instanceName)
+							return errors.Wrapf(err, "instance %s", instanceName)
 						}
 
 						return nil
