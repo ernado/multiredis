@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -27,7 +28,8 @@ type RedisInstance struct {
 }
 
 type RedisInstanceSentinel struct {
-	Port int `yaml:"port"`
+	StartPort int `yaml:"startPort"`
+	Replicas  int `yaml:"replicas"`
 }
 
 type RedisCluster struct {
@@ -221,12 +223,23 @@ func newRootCommand() *cobra.Command {
 			const host = "127.0.0.1"
 
 			ctx := cobraCommand.Context()
-			ctx, cancel := signal.NotifyContext(ctx, os.Interrupt)
+			shutdownContext, shutdownCancel := signal.NotifyContext(ctx, os.Interrupt)
+			defer shutdownCancel()
+
+			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 
 			g, ctx := errgroup.WithContext(ctx)
+			go func() {
+				<-shutdownContext.Done()
+				select {
+				case <-ctx.Done():
+				case <-time.After(5 * time.Second):
+					cancel()
+				}
+			}()
 			for name, instance := range config.Instances {
-				if instance.Sentinel.Port != 0 {
+				for i := 0; i < instance.Sentinel.Replicas; i++ {
 					instanceDir := filepath.Join(config.BaseDir, name, "sentinel")
 					if err := os.MkdirAll(instanceDir, 0700); err != nil {
 						return errors.Wrap(err, "create instance dir")
@@ -234,7 +247,7 @@ func newRootCommand() *cobra.Command {
 
 					configPath := filepath.Join(instanceDir, "sentinel.conf")
 					cfg := RedisSentinelConfig{
-						Port: instance.Sentinel.Port,
+						Port: instance.Sentinel.StartPort + i,
 						Monitors: []SentinelMonitor{
 							{
 								Name:                  name,
@@ -254,12 +267,15 @@ func newRootCommand() *cobra.Command {
 					}
 
 					cmd := exec.CommandContext(ctx, "redis-sentinel", configPath)
-					prefix := fmt.Sprintf("[%s.sentinel] ", name)
+					prefix := fmt.Sprintf("[%s.sentinel.%d] ", name, i)
 					cmd.Stdout = newPrefixWriter(mux, prefix)
 					cmd.Stderr = newPrefixWriter(mux, prefix)
 					cmd.Dir = instanceDir
 
 					g.Go(func() error {
+						defer func() {
+							fmt.Printf("%sstoppped\n", prefix)
+						}()
 						return cmd.Run()
 					})
 				}
@@ -291,6 +307,10 @@ func newRootCommand() *cobra.Command {
 					cmd.Stderr = newPrefixWriter(mux, prefix)
 					cmd.Dir = instanceDir
 
+					defer func() {
+						fmt.Printf("%sstoppped\n", prefix)
+					}()
+
 					return cmd.Run()
 				})
 			}
@@ -298,7 +318,7 @@ func newRootCommand() *cobra.Command {
 			for clusterName, cluster := range config.Clusters {
 				var nodes []string
 				for i := 0; i < cluster.Replicas; i++ {
-					instanceName := fmt.Sprintf("%s-%d", clusterName, i)
+					instanceName := fmt.Sprintf("%s.%d", clusterName, i)
 					instancePort := cluster.StartPort + i
 					instanceAddr := net.JoinHostPort(host, fmt.Sprintf("%d", instancePort))
 					nodes = append(nodes, instanceAddr)
@@ -328,7 +348,9 @@ func newRootCommand() *cobra.Command {
 						cmd.Stdout = newPrefixWriter(mux, prefix)
 						cmd.Stderr = newPrefixWriter(mux, prefix)
 						cmd.Dir = instanceDir
-
+						defer func() {
+							fmt.Printf("%sstoppped\n", prefix)
+						}()
 						if err := cmd.Run(); err != nil {
 							return errors.Wrapf(err, "start redis instance %s", instanceName)
 						}

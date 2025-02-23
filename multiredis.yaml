@@ -3,7 +3,8 @@ instances:
   primary:
     port: 27379
     sentinel:
-      port: 27479
+      startPort: 27479
+      replicas: 3
   secondary:
     port: 27380
     replicaOf: primary
