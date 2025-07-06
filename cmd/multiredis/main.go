@@ -459,7 +459,7 @@ func newRootCommand() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVarP(&args.Config, "config", "c", "/etc/multiredis.yaml", "config file")
+	f.StringVarP(&args.Config, "config", "c", "/etc/multiredis/multiredis.yaml", "config file")
 	return cmd
 }
 
